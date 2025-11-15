@@ -1,13 +1,26 @@
 Package: INSiGHT
-Title: What the Package Does (One Line, Title Case)
-Version: 0.0.0.9000
-Authors@R: 
-    person("First", "Last", , "first.last@example.com", role = c("aut", "cre"))
-Description: What the package does (one paragraph).
-License: `use_mit_license()`, `use_gpl3_license()` or friends to pick a
-    license
+Title: INSiGHT: Integrating multi-samples for robust spatial gene heterogeneity detection in spatial transcriptomics
+Version: 1.0.0
+Authors@R:
+    c(
+      person(given = "Haohao", family = "Su", email = "suhaohao@msu.edu", role = c("aut", "cre")),
+      person(given = "Yuesong", family = "Wu", email = "wuyuesong@msu.edu", role = "aut"),
+      person(given = "Yuehua", family = "Cui", email = "cuiy@msu.edu", role = "aut")
+    )
+Maintainer: Haohao Su <suhaohao@msu.edu>
+Description: INSiGHT is a non-parametric statistical framework designed to identify spatially variable genes (SVGs) across multiple tissue slices in a unified, efficient, and robust manner.
+License: GPL-3 + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
+Imports: 
+    ACAT,
+    CompQuadForm,
+    Matrix,
+    matrixStats,
+    methods,
+    RANN,
+    RSpectra,
+    stats
 URL: https://github.com/HaroldSu/INSiGHT
 BugReports: https://github.com/HaroldSu/INSiGHT/issues
