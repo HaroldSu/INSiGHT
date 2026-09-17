@@ -279,6 +279,10 @@ createINSiGHTobject <- function(data.input, spatial.locs,
     if (has_cov) rownames(covariates[[iSample]]) <- NULL
   }
   # ----------------------------------------------------------------------------
+  # Preserve full-input library sizes before intersecting genes across samples.
+  library.sizes <- lapply(seq_len(n.Sample), function(i) {
+    setNames(Matrix::colSums(data.input[[i]]), barcodes.list[[i]])
+  })
   # Filter genes shared by all the samples
   if (is.null(rownames(data.input[[1]]))) {
     stop("Row names in \'data.input\' cannot be NULL!")
@@ -319,7 +323,8 @@ createINSiGHTobject <- function(data.input, spatial.locs,
     samples =sample.names,
     genes = genes.used,
     barcodes = barcodes.list,
-    W.info = W.info
+    W.info = W.info,
+    features = list(library.sizes = library.sizes)
   )
   return(object)
 }
@@ -437,6 +442,46 @@ HWH_matvec <- function(x, args) {
 
 # ==============================================================================
 # ==============================================================================
+# Helper function to efficiently find roots of the secular equation
+SolveSecularEquation <- function(d, u) {
+  # Round to avoid floating point issues when identifying identical eigenvalues
+  d_rounded <- round(d, 8)
+  agg <- aggregate(u^2, by = list(d = d_rounded), FUN = sum)
+  d_uniq <- sort(agg$d)
+  u2_uniq <- agg$x[order(agg$d)]
+
+  n_uniq <- length(d_uniq)
+  roots <- numeric(n_uniq - 1)
+
+  # The secular equation function f(lambda) = sum( u_j^2 / (d_j - lambda) )
+  f <- function(lam) sum(u2_uniq / (d_uniq - lam))
+
+  # There is exactly one root between each sorted unique eigenvalue
+  for (i in 1:(n_uniq - 1)) {
+    eps <- 1e-8 * (d_uniq[i+1] - d_uniq[i])
+    res <- tryCatch({
+      uniroot(f, lower = d_uniq[i] + eps, upper = d_uniq[i+1] - eps)$root
+    }, error = function(e) {
+      # Fallback for extreme numerical precision edge cases
+      (d_uniq[i] + d_uniq[i+1]) / 2
+    })
+    roots[i] <- res
+  }
+
+  # If an eigenvalue was repeated k times, it becomes an exact root k-1 times
+  freq <- table(d_rounded)
+  exact_evals <- unlist(lapply(names(freq), function(val) {
+    count <- freq[val]
+    if (count > 1) rep(as.numeric(val), count - 1) else numeric(0)
+  }))
+
+  # Combine roots, exact repeated eigenvalues, and the guaranteed 0 eigenvalue
+  all_evals <- c(roots, exact_evals, 0)
+  return(sort(all_evals, decreasing = TRUE))
+}
+
+# ==============================================================================
+# ==============================================================================
 #' @title Compute the bandwidth hyper-parameters for a INSiGHT object
 #' @description
 #' Conpute the bandwidth hyperparameters of the Gaussian kernels for a INSiGHT,
@@ -532,6 +577,7 @@ ComputeBandwidth <- function(object, k.NN = 100,
 #' @param weighted (default FALSE)
 #' If true, then the each spatial similarity matrix will be weighted
 #' by its corresponding weight matrix.
+#' @param global.centering ...
 #' @return A INSiGHT object.
 #'
 #' @import RANN
@@ -545,13 +591,20 @@ ComputeBandwidth <- function(object, k.NN = 100,
 constructGaussianW <- function(object, phi,
                                NN4Kernel = FALSE, k.NN4Kernel = 100,
                                eigen.less = FALSE, eigen.prop = 0.3,
-                               weighted = FALSE) {
+                               weighted = FALSE,
+                               global.centering = TRUE) { # NEW ARGUMENT
   spatial.locs <- object@spaCoord
   n.Sample <- length(spatial.locs)
   has_cov <- !is.null(object@covariateMat)
   has_weights <- !is.null(object@weightMat)
+
   W.list <- list()
   W.ev.list <- list()
+
+  # Global Centering Tracking Variables
+  N_total <- sum(sapply(spatial.locs, nrow))
+  global_d <- c() # To store all local uncentered eigenvalues
+  global_u <- c() # To store all local projection weights
 
   if (isTRUE(NN4Kernel)) {
     for (iSample in 1:n.Sample) {
@@ -617,20 +670,46 @@ constructGaussianW <- function(object, phi,
         }
         W.ev <- eig$values
         W.ev <- W.ev[W.ev > 1e-10]
+        W.ev.list[[iSample]] <- W.ev
+
       } else {
-        # Center W
         if (has_cov) {
           Wmat.center <- H %*% Wmat %*% H
+          Wmat.center@x[Wmat.center@x < 1e-5] <- 0
+          Wmat.center <- drop0(Wmat.center)
+          W.ev <- eigen(Wmat.center, only.values = TRUE, symmetric = TRUE)$values
+          W.ev.list[[iSample]] <- W.ev
+
         } else {
-          Wmat.center <- CenterKernel(Wmat)
+          # ALGORITHM ADOPTION HERE
+          if (global.centering) {
+            # Compute UNCENTERED local eigenvalues and eigenvectors
+            eig <- eigen(Wmat, symmetric = TRUE)
+            d_m <- eig$values
+            Q_m <- eig$vectors
+
+            # Project local 1-vector onto eigenvectors, scaled by global N
+            ones_m <- rep(1, n.locs)
+            u_m <- as.numeric(t(Q_m) %*% ones_m) / sqrt(N_total)
+
+            # Store for global secular equation
+            global_d <- c(global_d, d_m)
+            global_u <- c(global_u, u_m)
+
+            # Store uncentered local evals just in case needed downstream
+            W.ev.list[[iSample]] <- d_m
+
+          } else {
+            # Standard Local Centering Fallback
+            Wmat.center <- CenterKernel(Wmat)
+            Wmat.center@x[Wmat.center@x < 1e-5] <- 0
+            Wmat.center <- drop0(Wmat.center)
+            W.ev <- eigen(Wmat.center, only.values = TRUE, symmetric = TRUE)$values
+            W.ev.list[[iSample]] <- W.ev
+          }
         }
-        rm(Wmat) # zero out small stored values
-        Wmat.center@x[Wmat.center@x < 1e-5] <- 0
-        # remove explicit stored zeros
-        Wmat.center <- drop0(Wmat.center)
-        W.ev <- eigen(Wmat.center, only.values = TRUE, symmetric = TRUE)$values
+        rm(Wmat)
       }
-      W.ev.list[[iSample]] <- W.ev
 
       cat(paste0("##\t Sample ", object@samples[iSample], " is complete. \n"))
     }
@@ -640,9 +719,8 @@ constructGaussianW <- function(object, phi,
       Dmat <- dist(spatial.locs[[iSample]])
       Wmat <- exp(-Dmat^2 / (2 * phi^2))
       Wmat.sparse <- Matrix(as.matrix(Wmat), sparse = TRUE)
-      # zero out small stored values
+
       Wmat.sparse@x[Wmat.sparse@x < 1e-5] <- 0
-      # remove explicit stored zeros
       Wmat.sparse <- drop0(Wmat.sparse)
 
       if(has_weights && isTRUE(weighted)) {
@@ -660,25 +738,50 @@ constructGaussianW <- function(object, phi,
         H <- diag(1, nrow = nrow(X)) - P
         Wmat.sparse.center <- H %*% Wmat.sparse %*% H
         rm(X, XtX, XtX_inv, P, H)
+
+        Wmat.sparse.center@x[Wmat.sparse.center@x < 1e-5] <- 0
+        Wmat.sparse.center <- drop0(Wmat.sparse.center)
+        W.ev <- eigen(Wmat.sparse.center, only.values = TRUE, symmetric = TRUE)$values
+        W.ev.list[[iSample]] <- W.ev
+
       } else {
-        Wmat.sparse.center <- CenterKernel(Wmat.sparse)
+        # ALGORITHM ADOPTION HERE (Dense spatial distances branch)
+        if (global.centering && !eigen.less) {
+          eig <- eigen(Wmat.sparse, symmetric = TRUE)
+          d_m <- eig$values
+          Q_m <- eig$vectors
+
+          ones_m <- rep(1, n.locs)
+          u_m <- as.numeric(t(Q_m) %*% ones_m) / sqrt(N_total)
+
+          global_d <- c(global_d, d_m)
+          global_u <- c(global_u, u_m)
+          W.ev.list[[iSample]] <- d_m
+
+        } else {
+          Wmat.sparse.center <- CenterKernel(Wmat.sparse)
+          Wmat.sparse.center@x[Wmat.sparse.center@x < 1e-5] <- 0
+          Wmat.sparse.center <- drop0(Wmat.sparse.center)
+          W.ev <- eigen(Wmat.sparse.center, only.values = TRUE, symmetric = TRUE)$values
+          W.ev.list[[iSample]] <- W.ev
+        }
       }
 
       rm(Wmat.sparse)
-      # zero out small stored values
-      Wmat.sparse.center@x[Wmat.sparse.center@x < 1e-5] <- 0
-      # remove explicit stored zeros
-      Wmat.sparse.center <- drop0(Wmat.sparse.center)
-
-      # Eigen decomposition
-      W.ev <- eigen(Wmat.sparse.center, only.values = TRUE, symmetric = TRUE)$values
-      W.ev.list[[iSample]] <- W.ev
       cat(paste0("##\t Sample ", object@samples[iSample], " is complete. \n"))
     }
   }
 
+  # Final step: If global centering was requested, solve the secular equation once
+  if (global.centering && !has_cov && !eigen.less) {
+    cat("##\t Solving secular equation for global block-diagonal eigenvalues... \n")
+    global_eigenvalues <- SolveSecularEquation(global_d, global_u)
+    object@W.info$W.global_eigenvalues <- global_eigenvalues
+  }
+
   object@W.info$W.mat <- append(object@W.info$W.mat, list(W.list))
   object@W.info$W.eigenvalues <- append(object@W.info$W.eigenvalues, list(W.ev.list))
+
   return(object)
 }
 
@@ -717,6 +820,20 @@ constructGaussianW <- function(object, phi,
 #' or a "mixture" of multiple kernels will be contructed for spatial similarity.
 #' @param rank.tie A character string specifying how ties are treated.
 #' Run `?rank` for more details.
+#' @param normalization Expression transformation before ranking. The default,
+#' "library-size", divides each spot by its library size and multiplies by 10000.
+#' "log-library-size" additionally applies `log1p`; "none" uses input values
+#' unchanged and should be used for already-normalized data. Quality control
+#' always operates on the original input. Normalization requires finite,
+#' nonnegative expression values and positive factors for retained spots.
+#' @param size.factors Optional list of numeric vectors, in sample order, supplying
+#' spot-specific divisors instead of library sizes. Named vectors are matched to
+#' spot barcodes; unnamed vectors must follow the object's current spot order.
+#' By default, library sizes are calculated from all genes supplied to
+#' `createINSiGHTobject`, before gene intersection or filtering. For prefiltered
+#' input, supply factors estimated from the full counts. Older objects without
+#' stored library sizes use their current expression matrices, with a warning.
+#' Cannot be supplied when `normalization = "none"`.
 #' @param rank.zero (default FALSE) logical.
 #' If true, assign zeros a rank of 0 and rank nonzero values from 1 upward.
 #' If false, rank all the values.
@@ -742,9 +859,70 @@ processINSiGHT <- function(object,
                            kernel.option = c("single","mixture"),
                            rank.tie = c("min", "max", "first", "last", "random", "average"),
                            rank.zero = TRUE,
-                           weighted = FALSE) {
+                           weighted = FALSE,
+                           normalization = c("library-size", "none", "log-library-size"),
+                           size.factors = NULL) {
+  normalization <- match.arg(normalization)
+  if (normalization == "none" && !is.null(size.factors)) {
+    stop('size.factors cannot be supplied when normalization = "none".', call. = FALSE)
+  }
+  factors <- NULL
+  if (normalization != "none") {
+    valid.counts <- vapply(object@geneExpr, function(x) {
+      all(is.finite(x)) && all(x >= 0)
+    }, logical(1))
+    if (!all(valid.counts)) {
+      stop("Normalization requires finite, nonnegative expression values.", call. = FALSE)
+    }
+    factors <- size.factors
+    if (is.null(factors)) {
+      factors <- object@features$library.sizes
+      if (is.null(factors)) {
+        warning("No stored library sizes; using current expression matrices. Recreate the object from full counts for pre-filtering library sizes.", call. = FALSE)
+        factors <- lapply(seq_along(object@geneExpr), function(i) {
+          setNames(Matrix::colSums(object@geneExpr[[i]]), object@barcodes[[i]])
+        })
+        object@features$library.sizes <- factors
+      }
+    }
+    if (!is.list(factors) || length(factors) != length(object@geneExpr)) {
+      stop("size.factors must be a list with one numeric vector per sample, in sample order.", call. = FALSE)
+    }
+    factors <- lapply(seq_along(factors), function(i) {
+      f <- factors[[i]]
+      spots <- object@barcodes[[i]]
+      if (!is.numeric(f) || !is.null(dim(f))) {
+        stop("Each size-factor vector must be numeric.", call. = FALSE)
+      }
+      if (is.null(names(f))) {
+        if (length(f) != length(spots)) {
+          stop("Unnamed size factors must match the number of spots.", call. = FALSE)
+        }
+        names(f) <- spots
+      }
+      if (anyNA(names(f)) || anyDuplicated(names(f)) ||
+          anyDuplicated(spots) || !all(spots %in% names(f))) {
+        stop("Size-factor names must uniquely identify every spot barcode.", call. = FALSE)
+      }
+      f <- f[spots]
+      if (any(!is.finite(f)) || any(f < 0)) {
+        stop("Size factors must be finite and nonnegative; retained spots require positive factors.", call. = FALSE)
+      }
+      f
+    })
+  }
   # Run quality control process
   object <- QualityControl(object = object, spot.threshold = spot.threshold, gene.threshold = gene.threshold)
+
+  if (!is.null(factors)) {
+    factors <- lapply(seq_along(factors), function(i) {
+      f <- factors[[i]][object@barcodes[[i]]]
+      if (any(f <= 0)) {
+        stop("Normalization requires positive size factors for all retained spots; remove zero-library spots during quality control.", call. = FALSE)
+      }
+      f
+    })
+  }
 
   # Compute bandwidth parameters
   object <- ComputeBandwidth(object = object, k.NN = k.NN4bandwidth, kernel.option = kernel.option, quantile.bandwidth = quantile.bandwidth)
@@ -759,10 +937,11 @@ processINSiGHT <- function(object,
 
   # ----------------------------------------------------------------------------
   kernel.arg <- match.arg(kernel.option)
-  object@features[[1]] <- kernel.arg
-  object@features[[2]] <- NN4Kernel
-  object@features[[3]] <- eigen.less
-  names(object@features) <- c("kernel.option", "NN4Kernel", "eigen.less")
+  object@features$kernel.option <- kernel.arg
+  object@features$NN4Kernel <- NN4Kernel
+  object@features$eigen.less <- eigen.less
+  object@features$normalization <- normalization
+  object@features$size.factors <- factors
 
   if(kernel.arg == "mixture"){
     for (iKernel in 1:length(object@bandwidths)) {
@@ -786,7 +965,17 @@ processINSiGHT <- function(object,
   cat("##\t Working on rank scores...\n")
 
   rankScore <- lapply(seq_len(n.Sample), function(iSample){
-    Y <- as.matrix(object@geneExpr[[iSample]])
+    Y <- object@geneExpr[[iSample]]
+    if (normalization != "none") {
+      # Scale columns before densifying sparse input; leave stored counts intact.
+      if (inherits(Y, "sparseMatrix")) {
+        Y <- Y %*% Matrix::Diagonal(x = 10000 / factors[[iSample]])
+      } else {
+        Y <- sweep(as.matrix(Y), 2, factors[[iSample]], FUN = "/") * 10000
+      }
+      if (normalization == "log-library-size") Y <- log1p(Y)
+    }
+    Y <- as.matrix(Y)
 
     if(isTRUE(rank.zero)) {
       # Row-wise ranks in one shot (ties averaged, same shape as Y)

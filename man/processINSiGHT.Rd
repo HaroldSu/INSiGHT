@@ -17,7 +17,9 @@ processINSiGHT(
   kernel.option = c("single", "mixture"),
   rank.tie = c("min", "max", "first", "last", "random", "average"),
   rank.zero = TRUE,
-  weighted = FALSE
+  weighted = FALSE,
+  normalization = c("library-size", "none", "log-library-size"),
+  size.factors = NULL
 )
 }
 \arguments{
@@ -66,6 +68,22 @@ If false, rank all the values.}
 \item{weighted}{(default FALSE)
 If true, then the each spatial similarity matrix will be weighted
 by its corresponding weight matrix.}
+
+\item{normalization}{Expression transformation before ranking. The default,
+"library-size", divides each spot by its library size and multiplies by 10000.
+"log-library-size" additionally applies \code{log1p}; "none" uses input values
+unchanged and should be used for already-normalized data. Quality control
+always operates on the original input. Normalization requires finite,
+nonnegative expression values and positive factors for retained spots.}
+
+\item{size.factors}{Optional list of numeric vectors, in sample order, supplying
+spot-specific divisors instead of library sizes. Named vectors are matched to
+spot barcodes; unnamed vectors must follow the object's current spot order.
+By default, library sizes are calculated from all genes supplied to
+\code{createINSiGHTobject}, before gene intersection or filtering. For prefiltered
+input, supply factors estimated from the full counts. Older objects without
+stored library sizes use their current expression matrices, with a warning.
+Cannot be supplied when \code{normalization = "none"}.}
 }
 \value{
 A INSiGHT object.
