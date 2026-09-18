@@ -1,7 +1,7 @@
 #####################################################################
 # Package: INSiGHT
 # Version: 1.0.0
-# Date : 2025-11-14
+# Date : 2026-09-17
 ######################################################################
 
 ##########################################################
@@ -281,7 +281,7 @@ createINSiGHTobject <- function(data.input, spatial.locs,
   # ----------------------------------------------------------------------------
   # Preserve full-input library sizes before intersecting genes across samples.
   library.sizes <- lapply(seq_len(n.Sample), function(i) {
-    setNames(Matrix::colSums(data.input[[i]]), barcodes.list[[i]])
+    stats::setNames(Matrix::colSums(data.input[[i]]), barcodes.list[[i]])
   })
   # Filter genes shared by all the samples
   if (is.null(rownames(data.input[[1]]))) {
@@ -446,7 +446,7 @@ HWH_matvec <- function(x, args) {
 SolveSecularEquation <- function(d, u) {
   # Round to avoid floating point issues when identifying identical eigenvalues
   d_rounded <- round(d, 8)
-  agg <- aggregate(u^2, by = list(d = d_rounded), FUN = sum)
+  agg <- stats::aggregate(u^2, by = list(d = d_rounded), FUN = sum)
   d_uniq <- sort(agg$d)
   u2_uniq <- agg$x[order(agg$d)]
 
@@ -460,7 +460,7 @@ SolveSecularEquation <- function(d, u) {
   for (i in 1:(n_uniq - 1)) {
     eps <- 1e-8 * (d_uniq[i+1] - d_uniq[i])
     res <- tryCatch({
-      uniroot(f, lower = d_uniq[i] + eps, upper = d_uniq[i+1] - eps)$root
+      stats::uniroot(f, lower = d_uniq[i] + eps, upper = d_uniq[i+1] - eps)$root
     }, error = function(e) {
       # Fallback for extreme numerical precision edge cases
       (d_uniq[i] + d_uniq[i+1]) / 2
@@ -834,9 +834,9 @@ constructGaussianW <- function(object, phi,
 #' input, supply factors estimated from the full counts. Older objects without
 #' stored library sizes use their current expression matrices, with a warning.
 #' Cannot be supplied when `normalization = "none"`.
-#' @param rank.zero (default FALSE) logical.
-#' If true, assign zeros a rank of 0 and rank nonzero values from 1 upward.
-#' If false, rank all the values.
+#' @param rank.zero (default TRUE) logical.
+#' If true, rank all the values including zeros.
+#' If false, assign zeros a rank of 0 and rank nonzero values from 1 upward.
 #' @param weighted (default FALSE)
 #' If true, then the each spatial similarity matrix will be weighted
 #' by its corresponding weight matrix.
@@ -880,7 +880,7 @@ processINSiGHT <- function(object,
       if (is.null(factors)) {
         warning("No stored library sizes; using current expression matrices. Recreate the object from full counts for pre-filtering library sizes.", call. = FALSE)
         factors <- lapply(seq_along(object@geneExpr), function(i) {
-          setNames(Matrix::colSums(object@geneExpr[[i]]), object@barcodes[[i]])
+          stats::setNames(Matrix::colSums(object@geneExpr[[i]]), object@barcodes[[i]])
         })
         object@features$library.sizes <- factors
       }

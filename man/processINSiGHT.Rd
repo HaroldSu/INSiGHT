@@ -61,9 +61,9 @@ or a "mixture" of multiple kernels will be contructed for spatial similarity.}
 \item{rank.tie}{A character string specifying how ties are treated.
 Run \code{?rank} for more details.}
 
-\item{rank.zero}{(default FALSE) logical.
-If true, assign zeros a rank of 0 and rank nonzero values from 1 upward.
-If false, rank all the values.}
+\item{rank.zero}{(default TRUE) logical.
+If true, rank all the values including zeros.
+If false, assign zeros a rank of 0 and rank nonzero values from 1 upward.}
 
 \item{weighted}{(default FALSE)
 If true, then the each spatial similarity matrix will be weighted

@@ -11,7 +11,8 @@ constructGaussianW(
   k.NN4Kernel = 100,
   eigen.less = FALSE,
   eigen.prop = 0.3,
-  weighted = FALSE
+  weighted = FALSE,
+  global.centering = TRUE
 )
 }
 \arguments{
@@ -38,6 +39,8 @@ Works when \code{eigen.less == TRUE}.}
 \item{weighted}{(default FALSE)
 If true, then the each spatial similarity matrix will be weighted
 by its corresponding weight matrix.}
+
+\item{global.centering}{...}
 }
 \value{
 A INSiGHT object.
